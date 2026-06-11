@@ -13,17 +13,25 @@ try:
 except AttributeError:
     pass  # In case stdout doesn't support reconfigure (e.g. in some IDE test runners)
 
+import time
+TEST_DB_FILE = f"test_haftyar_{int(time.time())}.db"
+TEST_DB_PATH = f"./{TEST_DB_FILE}"
+TEST_DB_URL = f"sqlite:///{TEST_DB_PATH}"
+
 # Set environment variable before imports to ensure it is picked up
-os.environ["DATABASE_URL"] = "sqlite:///./test_haftyar.db"
+os.environ["DATABASE_URL"] = TEST_DB_URL
 os.environ["ENV"] = "dev"
+
+from app.core.config import settings
+settings.DATABASE_URL = TEST_DB_URL
 
 from app.main import app
 from app.database.base import Base
 from app.database.session import get_db
 from app.services import message_service
 
+
 # Create database engine and session for test database
-TEST_DB_URL = "sqlite:///./test_haftyar.db"
 engine = create_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -69,9 +77,9 @@ class TestWebhookBotCommands(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Clean up existing test database if exists
-        if os.path.exists("./test_haftyar.db"):
+        if os.path.exists(TEST_DB_PATH):
             try:
-                os.remove("./test_haftyar.db")
+                os.remove(TEST_DB_PATH)
             except Exception:
                 pass
         # Initialize tables
@@ -83,9 +91,9 @@ class TestWebhookBotCommands(unittest.TestCase):
         # Dispose the engine to close all connections
         engine.dispose()
         # Clean up database after test
-        if os.path.exists("./test_haftyar.db"):
+        if os.path.exists(TEST_DB_PATH):
             try:
-                os.remove("./test_haftyar.db")
+                os.remove(TEST_DB_PATH)
             except Exception:
                 pass
 
