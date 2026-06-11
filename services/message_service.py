@@ -789,13 +789,14 @@ async def handle_callback_query(db: Session, sender: User, message: InternalMess
             )
             keyboard = {
                 "keyboard": [
-                    [{"text": "👥 انتخاب مخاطب از لیست چت‌ها", "request_users": {"request_id": 1, "user_is_bot": false}}],
+                    [{"text": "👥 انتخاب مخاطب از لیست چت‌ها", "request_users": {"request_id": 1, "user_is_bot": False}}],
                     [{"text": "❌ لغو عملیات"}]
                 ],
                 "one_time_keyboard": True,
                 "resize_keyboard": True
             }
             await send_bot_reply(message.platform, chat_id, reply_text, reply_markup=keyboard)
+
             
         elif sub_action == "create_project_prompt":
             USER_STATES[message.user_id] = {"action": "awaiting_project_name", "team_id": team_id}
