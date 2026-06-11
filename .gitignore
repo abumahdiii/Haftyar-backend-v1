@@ -1,0 +1,16 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database files
+*.db
+*.sqlite3
+
+# Environment variables and local configs
+.env
+.vscode/
+.idea/
+
+# Local junction folder
+app
