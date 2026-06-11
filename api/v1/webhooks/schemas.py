@@ -10,3 +10,6 @@ class InternalMessage(BaseModel):
     platform: str = Field(..., description="Platform identifier: 'bale' | 'telegram'")
     raw_payload: dict = Field(..., description="Raw webhook payload for logging or future parsing")
     contact_phone: str | None = Field(None, description="Normalized phone number if contact shared")
+    callback_query_id: str | None = Field(None, description="Telegram callback query ID if button clicked")
+    shared_user_id: str | None = Field(None, description="Telegram user ID shared via KeyboardButtonRequestUsers")
+
