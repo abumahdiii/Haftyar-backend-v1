@@ -507,18 +507,19 @@ def get_main_menu_payload(sender: User):
         f"همچنین می‌توانید از دکمه‌های زیر برای مدیریت سریع استفاده کنید 👇"
     )
 
-    reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "👥 تیم‌های من", "callback_data": "menu:teams"},
-                {"text": "📋 تسک‌های من", "callback_data": "menu:tasks"}
-            ],
-            [
-                {"text": "🔗 ورود مستقیم به پنل وب", "url": login_link}
-            ]
+    keyboard = [
+        [
+            {"text": "👥 تیم‌های من", "callback_data": "menu:teams"},
+            {"text": "📋 تسک‌های من", "callback_data": "menu:tasks"}
         ]
-    }
+    ]
+    # Telegram strictly rejects localhost or non-https URLs in inline buttons
+    if login_link.startswith("https://") and "localhost" not in login_link:
+        keyboard.append([{"text": "🔗 ورود مستقیم به پنل وب", "url": login_link}])
+
+    reply_markup = {"inline_keyboard": keyboard}
     return text, reply_markup
+
 
 
 def get_teams_list_payload(db: Session, sender: User):
