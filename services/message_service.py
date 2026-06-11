@@ -450,6 +450,402 @@ async def handle_update_task(db: Session, sender: User, args: list[str]) -> str:
     return f"✅ وضعیت تسک `{task.title}` به '{status_fa}' تغییر یافت."
 
 
+# A simple in-memory session store mapping user_id (platform specific string) to their current state/action
+USER_STATES = {}
+
+
+async def answer_callback_query(platform: str, callback_query_id: str, text: str | None = None) -> bool:
+    token = settings.TELEGRAM_BOT_TOKEN if platform == "telegram" else settings.BALE_BOT_TOKEN
+    if not token:
+        return False
+    base_url = "https://api.telegram.org" if platform == "telegram" else "https://api.bale.ai"
+    url = f"{base_url}/bot{token}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json=payload, timeout=5.0)
+            return True
+    except Exception:
+        return False
+
+
+async def edit_bot_message(platform: str, chat_id: str, message_id: str, text: str, reply_markup: dict | None = None) -> bool:
+    token = settings.TELEGRAM_BOT_TOKEN if platform == "telegram" else settings.BALE_BOT_TOKEN
+    if not token:
+        return False
+    base_url = "https://api.telegram.org" if platform == "telegram" else "https://api.bale.ai"
+    url = f"{base_url}/bot{token}/editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": int(message_id),
+        "text": text,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, timeout=10.0)
+            return response.status_code == 200
+    except Exception:
+        return False
+
+
+def get_main_menu_payload(sender: User):
+    token = create_access_token(sender.id)
+    login_link = f"{settings.FRONTEND_URL}/login/callback?token={token}"
+    text = (
+        f"سلام {sender.username or 'کاربر'} عزیز! 🌸\n"
+        f"به ربات هفته‌یار خوش آمدید.\n\n"
+        f"برای ورود مستقیم به پنل مدیریت تسک خود، روی لینک زیر کلیک کنید:\n"
+        f"🔗 {login_link}\n\n"
+        f"📋 لیست دستورات فعال ربات:\n"
+        f"🔹 /teams - لیست تیم‌های شما\n"
+        f"🔹 /tasks - لیست تسک‌های شما\n"
+        f"🔹 /help - راهنمای استفاده و لیست دستورات\n\n"
+        f"همچنین می‌توانید از دکمه‌های زیر برای مدیریت سریع استفاده کنید 👇"
+    )
+
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "👥 تیم‌های من", "callback_data": "menu:teams"},
+                {"text": "📋 تسک‌های من", "callback_data": "menu:tasks"}
+            ],
+            [
+                {"text": "🔗 ورود مستقیم به پنل وب", "url": login_link}
+            ]
+        ]
+    }
+    return text, reply_markup
+
+
+def get_teams_list_payload(db: Session, sender: User):
+    from app.models.team_models import Team, TeamMember
+    teams = db.query(Team).join(TeamMember).filter(TeamMember.user_id == sender.id).all()
+    if not teams:
+        text = "⚠️ شما هنوز عضو هیچ تیمی نیستید. می‌توانید با دستور /create_team <نام تیم> تیم جدید بسازید."
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "menu:main"}]
+            ]
+        }
+        return text, reply_markup
+    
+    text = "👥 لیست تیم‌های شما:\n\n"
+    for t in teams:
+        text += f"🔹 {t.name}\n📌 شناسه: `{t.id}`\n\n"
+    text += "برای مشاهده جزئیات هر تیم روی دکمه‌ی آن کلیک کنید 👇"
+    
+    keyboard = []
+    for t in teams:
+        keyboard.append([{"text": f"🔹 {t.name}", "callback_data": f"team:detail:{t.id}"}])
+    keyboard.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "menu:main"}])
+    reply_markup = {"inline_keyboard": keyboard}
+    return text, reply_markup
+
+
+def get_team_detail_payload(db: Session, sender: User, team_id: str):
+    from app.models.team_models import Team
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        return "❌ تیم یافت نشد.", {"inline_keyboard": [[{"text": "🔙 لیست تیم‌ها", "callback_data": "menu:teams"}]]}
+        
+    text = (
+        f"👥 نام تیم: *{team.name}*\n"
+        f"📌 شناسه تیم:\n`{team.id}`\n\n"
+        f"عملیات مورد نظر خود را انتخاب کنید 👇"
+    )
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "👥 اعضای تیم", "callback_data": f"team:members:{team.id}"},
+                {"text": "📂 پروژه‌های تیم", "callback_data": f"team:projects:{team.id}"}
+            ],
+            [
+                {"text": "📋 تسک‌های تیم", "callback_data": f"team:tasks:{team.id}"}
+            ],
+            [
+                {"text": "👥 دعوت عضو جدید", "callback_data": f"team:invite_prompt:{team.id}"},
+                {"text": "📂 پروژه جدید", "callback_data": f"team:create_project_prompt:{team.id}"}
+            ],
+            [
+                {"text": "📋 تسک جدید", "callback_data": f"team:create_task_prompt:{team.id}"}
+            ],
+            [
+                {"text": "🔙 بازگشت به لیست تیم‌ها", "callback_data": "menu:teams"}
+            ]
+        ]
+    }
+    return text, reply_markup
+
+
+def get_tasks_list_payload(db: Session, sender: User):
+    from app.models.task_models import Task, TaskAssignee, TaskStatus
+    tasks = db.query(Task).join(TaskAssignee).filter(TaskAssignee.user_id == sender.id).all()
+    if not tasks:
+        text = "📋 شما هیچ تسک محول شده‌ای ندارید."
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "menu:main"}]
+            ]
+        }
+        return text, reply_markup
+        
+    text = "📋 لیست تسک‌های محول شده به شما:\n\n"
+    for t in tasks:
+        status_fa = {TaskStatus.TODO: "انجام نشده 🔴", TaskStatus.IN_PROGRESS: "در حال انجام 🟡", TaskStatus.DONE: "انجام شده 🟢"}.get(t.status, t.status)
+        text += f"🔹 {t.title}\n📌 شناسه: `{t.id}`\nوضعیت: {status_fa}\n\n"
+    text += "برای مشاهده جزئیات و تغییر وضعیت تسک روی دکمه‌ی آن کلیک کنید 👇"
+    
+    keyboard = []
+    for t in tasks:
+        status_fa = {TaskStatus.TODO: "انجام نشده 🔴", TaskStatus.IN_PROGRESS: "در حال انجام 🟡", TaskStatus.DONE: "انجام شده 🟢"}.get(t.status, t.status)
+        keyboard.append([{"text": f"{t.title} ({status_fa})", "callback_data": f"task:detail:{t.id}"}])
+    keyboard.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "menu:main"}])
+    reply_markup = {"inline_keyboard": keyboard}
+    return text, reply_markup
+
+
+def get_task_detail_payload(db: Session, sender: User, task_id: str):
+    from app.models.task_models import Task, TaskStatus
+    from app.models.project_models import Project
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        return "❌ تسک یافت نشد.", {"inline_keyboard": [[{"text": "🔙 لیست تسک‌ها", "callback_data": "menu:tasks"}]]}
+        
+    project = db.query(Project).filter(Project.id == task.project_id).first()
+    proj_name = project.name if project else "نامشخص"
+    status_fa = {
+        TaskStatus.TODO: "انجام نشده 🔴",
+        TaskStatus.IN_PROGRESS: "در حال انجام 🟡",
+        TaskStatus.DONE: "انجام شده 🟢"
+    }.get(task.status, task.status)
+    
+    text = (
+        f"📋 تسک: *{task.title}*\n"
+        f"📌 شناسه تسک:\n`{task.id}`\n\n"
+        f"📂 پروژه: {proj_name}\n"
+        f"⚙️ وضعیت فعلی: *{status_fa}*\n"
+        f"📝 توضیحات: {task.description or 'ندارد'}\n\n"
+        f"برای تغییر وضعیت تسک روی یکی از دکمه‌های زیر کلیک کنید 👇"
+    )
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "🔴 انجام نشده", "callback_data": f"task:status:{task.id}:TODO"},
+                {"text": "🟡 در حال انجام", "callback_data": f"task:status:{task.id}:IN_PROGRESS"},
+                {"text": "🟢 انجام شده", "callback_data": f"task:status:{task.id}:DONE"}
+            ],
+            [
+                {"text": "🔙 بازگشت به لیست تسک‌ها", "callback_data": "menu:tasks"}
+            ]
+        ]
+    }
+    return text, reply_markup
+
+
+async def send_main_menu(db: Session, sender: User, platform: str, chat_id: str):
+    text, reply_markup = get_main_menu_payload(sender)
+    await send_bot_reply(platform, chat_id, text, reply_markup)
+
+
+async def send_teams_list(db: Session, sender: User, platform: str, chat_id: str):
+    text, reply_markup = get_teams_list_payload(db, sender)
+    await send_bot_reply(platform, chat_id, text, reply_markup)
+
+
+async def send_tasks_list(db: Session, sender: User, platform: str, chat_id: str):
+    text, reply_markup = get_tasks_list_payload(db, sender)
+    await send_bot_reply(platform, chat_id, text, reply_markup)
+
+
+async def send_team_detail(db: Session, sender: User, platform: str, chat_id: str, team_id: str):
+    text, reply_markup = get_team_detail_payload(db, sender, team_id)
+    await send_bot_reply(platform, chat_id, text, reply_markup)
+
+
+async def handle_state_invite_shared_user(db: Session, sender: User, team_id: str, shared_user_id: str) -> str:
+    from app.services.access import get_team_or_404, ensure_team_admin
+    try:
+        get_team_or_404(db, team_id)
+        ensure_team_admin(db, team_id, sender)
+    except Exception:
+        return "❌ خطا: شما دسترسی لازم برای دعوت به این تیم را ندارید یا تیم یافت نشد."
+
+    account = db.query(UserAccount).filter(
+        UserAccount.provider == "telegram",
+        UserAccount.provider_id == shared_user_id
+    ).first()
+
+    if account:
+        invited_user = account.user
+    else:
+        # Create a placeholder user without phone but with telegram user account
+        base_username = f"tg_{shared_user_id}"
+        username = base_username
+        suffix = 1
+        while db.query(User).filter(User.username == username).first():
+            username = f"{base_username}_{suffix}"
+            suffix += 1
+
+        invited_user = User(username=username, phone=None)
+        db.add(invited_user)
+        db.flush()
+
+        new_account = UserAccount(
+            user_id=invited_user.id,
+            provider="telegram",
+            provider_id=shared_user_id
+        )
+        db.add(new_account)
+        db.flush()
+
+    from app.models.team_models import TeamMember, TeamRole
+    existing = db.query(TeamMember).filter(
+        TeamMember.team_id == team_id,
+        TeamMember.user_id == invited_user.id
+    ).first()
+    if existing:
+        return f"⚠️ کاربر دعوت شده قبلاً عضو این تیم بوده است."
+
+    new_member = TeamMember(team_id=team_id, user_id=invited_user.id, role=TeamRole.MEMBER)
+    db.add(new_member)
+    db.commit()
+
+    return f"✅ کاربر دعوت شده با موفقیت به عضویت تیم درآمد. (شناسه تلگرام: {shared_user_id})"
+
+
+async def handle_callback_query(db: Session, sender: User, message: InternalMessage):
+    callback_query_id = message.callback_query_id
+    callback_data = message.message_text.replace("//callback:", "")
+    
+    raw_message = message.raw_payload.get("callback_query", {}).get("message", {})
+    chat_id = str(raw_message.get("chat", {}).get("id", ""))
+    message_id = str(raw_message.get("message_id", ""))
+    
+    parts = callback_data.split(":")
+    action = parts[0]
+    
+    await answer_callback_query(message.platform, callback_query_id)
+    
+    if action == "menu":
+        sub_action = parts[1]
+        if sub_action == "main":
+            text, reply_markup = get_main_menu_payload(sender)
+            await edit_bot_message(message.platform, chat_id, message_id, text, reply_markup)
+        elif sub_action == "teams":
+            text, reply_markup = get_teams_list_payload(db, sender)
+            await edit_bot_message(message.platform, chat_id, message_id, text, reply_markup)
+        elif sub_action == "tasks":
+            text, reply_markup = get_tasks_list_payload(db, sender)
+            await edit_bot_message(message.platform, chat_id, message_id, text, reply_markup)
+            
+    elif action == "team":
+        sub_action = parts[1]
+        team_id = parts[2]
+        
+        if sub_action == "detail":
+            text, reply_markup = get_team_detail_payload(db, sender, team_id)
+            await edit_bot_message(message.platform, chat_id, message_id, text, reply_markup)
+            
+        elif sub_action == "members":
+            reply_text = await handle_members(db, sender, [team_id])
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "🔙 بازگشت به تیم", "callback_data": f"team:detail:{team_id}"}]
+                ]
+            }
+            await edit_bot_message(message.platform, chat_id, message_id, reply_text, reply_markup)
+            
+        elif sub_action == "projects":
+            reply_text = await handle_projects(db, sender, [team_id])
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "➕ ساخت پروژه جدید", "callback_data": f"team:create_project_prompt:{team_id}"}],
+                    [{"text": "🔙 بازگشت به تیم", "callback_data": f"team:detail:{team_id}"}]
+                ]
+            }
+            await edit_bot_message(message.platform, chat_id, message_id, reply_text, reply_markup)
+            
+        elif sub_action == "tasks":
+            reply_text = await handle_team_tasks(db, sender, [team_id])
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "➕ ساخت تسک جدید", "callback_data": f"team:create_task_prompt:{team_id}"}],
+                    [{"text": "🔙 بازگشت به تیم", "callback_data": f"team:detail:{team_id}"}]
+                ]
+            }
+            await edit_bot_message(message.platform, chat_id, message_id, reply_text, reply_markup)
+            
+        elif sub_action == "invite_prompt":
+            USER_STATES[message.user_id] = {"action": "awaiting_invite_contact", "team_id": team_id}
+            reply_text = (
+                "👥 دعوت عضو جدید به تیم:\n\n"
+                "لطفاً با استفاده از دکمه‌ی زیر، مخاطب مورد نظر خود را از لیست چت‌های تلگرام انتخاب کنید👇\n"
+                "(یا شماره موبایل او را به صورت 09123456789 تایپ و ارسال کنید)"
+            )
+            keyboard = {
+                "keyboard": [
+                    [{"text": "👥 انتخاب مخاطب از لیست چت‌ها", "request_users": {"request_id": 1, "user_is_bot": false}}],
+                    [{"text": "❌ لغو عملیات"}]
+                ],
+                "one_time_keyboard": True,
+                "resize_keyboard": True
+            }
+            await send_bot_reply(message.platform, chat_id, reply_text, reply_markup=keyboard)
+            
+        elif sub_action == "create_project_prompt":
+            USER_STATES[message.user_id] = {"action": "awaiting_project_name", "team_id": team_id}
+            reply_text = (
+                "📂 ساخت پروژه جدید:\n\n"
+                "لطفاً نام پروژه مورد نظر خود را تایپ و ارسال کنید 👇"
+            )
+            keyboard = {
+                "keyboard": [
+                    [{"text": "❌ لغو عملیات"}]
+                ],
+                "one_time_keyboard": True,
+                "resize_keyboard": True
+            }
+            await send_bot_reply(message.platform, chat_id, reply_text, reply_markup=keyboard)
+            
+        elif sub_action == "create_task_prompt":
+            USER_STATES[message.user_id] = {"action": "awaiting_task_title", "team_id": team_id}
+            reply_text = (
+                "📋 ساخت تسک جدید:\n\n"
+                "لطفاً عنوان تسک خود را تایپ و ارسال کنید.\n"
+                "💡 همچنین می‌توانید مسئول تسک و توضیحات را در ادامه بنویسید:\n"
+                "`<عنوان تسک> [@شماره_موبایل_مسئول] [توضیحات تسک]`\n\n"
+                "مثال:\n"
+                "`طراحی دیتابیس @09123456789 بخش تسک‌ها پیاده‌سازی شود`"
+            )
+            keyboard = {
+                "keyboard": [
+                    [{"text": "❌ لغو عملیات"}]
+                ],
+                "one_time_keyboard": True,
+                "resize_keyboard": True
+            }
+            await send_bot_reply(message.platform, chat_id, reply_text, reply_markup=keyboard)
+            
+    elif action == "task":
+        sub_action = parts[1]
+        task_id = parts[2]
+        
+        if sub_action == "detail":
+            text, reply_markup = get_task_detail_payload(db, sender, task_id)
+            await edit_bot_message(message.platform, chat_id, message_id, text, reply_markup)
+        elif sub_action == "status":
+            status_val = parts[3]
+            reply_text = await handle_update_task(db, sender, [task_id, status_val])
+            await send_bot_reply(message.platform, chat_id, reply_text)
+            
+            text, reply_markup = get_task_detail_payload(db, sender, task_id)
+            await edit_bot_message(message.platform, chat_id, message_id, text, reply_markup)
+
+
 async def process_message(message: InternalMessage, db: Session):
     """
     Unified pipeline to process normalized messages from Telegram/Bale bots.
@@ -484,7 +880,67 @@ async def process_message(message: InternalMessage, db: Session):
             user = account.user
             text = message.message_text.strip() if message.message_text else ""
 
-            # Check if it is a bot command
+            # A. Check if it's a callback query
+            if message.callback_query_id:
+                await handle_callback_query(db, user, message)
+                log_event(
+                    event="process_message",
+                    message=message,
+                    result="callback_executed",
+                    details={"user_id": user.id, "callback_data": text},
+                )
+                return
+
+            # B. Check if we have an active state for this user
+            state = USER_STATES.get(message.user_id)
+            if state:
+                if text == "❌ لغو عملیات" or text.lower() == "/cancel":
+                    USER_STATES.pop(message.user_id, None)
+                    remove_kbd = {"remove_keyboard": True}
+                    await send_bot_reply(message.platform, message.user_id, "❌ عملیات لغو شد.", reply_markup=remove_kbd)
+                    await send_main_menu(db, user, message.platform, message.user_id)
+                    return
+
+                if state["action"] == "awaiting_invite_contact":
+                    if message.shared_user_id:
+                        reply_text = await handle_state_invite_shared_user(db, user, state["team_id"], message.shared_user_id)
+                    elif text:
+                        reply_text = await handle_invite(db, user, [state["team_id"], text])
+                    else:
+                        reply_text = "⚠️ لطفا از دکمه‌ی زیر برای انتخاب مخاطب استفاده کنید یا شماره موبایل او را تایپ کنید."
+                        await send_bot_reply(message.platform, message.user_id, reply_text)
+                        return
+
+                    USER_STATES.pop(message.user_id, None)
+                    remove_kbd = {"remove_keyboard": True}
+                    await send_bot_reply(message.platform, message.user_id, reply_text, reply_markup=remove_kbd)
+                    await send_team_detail(db, user, message.platform, message.user_id, state["team_id"])
+                    return
+
+                elif state["action"] == "awaiting_project_name":
+                    if text:
+                        reply_text = await handle_create_project(db, user, [state["team_id"], text])
+                        USER_STATES.pop(message.user_id, None)
+                        remove_kbd = {"remove_keyboard": True}
+                        await send_bot_reply(message.platform, message.user_id, reply_text, reply_markup=remove_kbd)
+                        await send_team_detail(db, user, message.platform, message.user_id, state["team_id"])
+                    else:
+                        await send_bot_reply(message.platform, message.user_id, "⚠️ لطفا نام پروژه را ارسال کنید.")
+                    return
+
+                elif state["action"] == "awaiting_task_title":
+                    if text:
+                        args = [state["team_id"]] + text.split()
+                        reply_text = await handle_create_task(db, user, args)
+                        USER_STATES.pop(message.user_id, None)
+                        remove_kbd = {"remove_keyboard": True}
+                        await send_bot_reply(message.platform, message.user_id, reply_text, reply_markup=remove_kbd)
+                        await send_team_detail(db, user, message.platform, message.user_id, state["team_id"])
+                    else:
+                        await send_bot_reply(message.platform, message.user_id, "⚠️ لطفا عنوان تسک را ارسال کنید.")
+                    return
+
+            # C. Check if it is a bot command
             if text.startswith("/"):
                 parts = text.split()
                 command = parts[0].lower()
@@ -492,51 +948,43 @@ async def process_message(message: InternalMessage, db: Session):
                     command = command.split("@")[0]
                 args = parts[1:]
 
-                reply_text = ""
-                if command == "/start" or command == "/help":
-                    token = create_access_token(user.id)
-                    login_link = f"{settings.FRONTEND_URL}/login/callback?token={token}"
-                    reply_text = (
-                        f"سلام {user.username or 'کاربر'} عزیز! 🌸\n"
-                        f"به هفته‌یار خوش آمدید.\n\n"
-                        f"برای ورود مستقیم به پنل مدیریت تسک خود، روی لینک زیر کلیک کنید:\n"
-                        f"{login_link}\n\n"
-                        f"📋 لیست دستورات فعال ربات:\n"
-                        f"🔹 /teams - لیست تیم‌های شما\n"
-                        f"🔹 /create_team <نام تیم> - ساخت تیم جدید\n"
-                        f"🔹 /invite <شناسه تیم> <شماره موبایل> - دعوت کاربر به تیم\n"
-                        f"🔹 /members <شناسه تیم> - نمایش اعضای تیم\n"
-                        f"🔹 /projects <شناسه تیم> - نمایش پروژه‌های تیم\n"
-                        f"🔹 /create_project <شناسه تیم> <نام پروژه> - ساخت پروژه جدید\n"
-                        f"🔹 /tasks - لیست تسک‌های محول شده به شما\n"
-                        f"🔹 /team_tasks <شناسه تیم> - لیست تسک‌های تیم\n"
-                        f"🔹 /create_task <شناسه تیم> <عنوان تسک> [@شماره_موبایل_مسئول] [توضیحات تسک] - ساخت تسک جدید\n"
-                        f"🔹 /update_task <شناسه تسک> <وضعیت (TODO/IN_PROGRESS/DONE)> - بروزرسانی وضعیت تسک"
-                    )
+                # If user runs any command, clear existing state
+                USER_STATES.pop(message.user_id, None)
+
+                if command == "/start" or command == "/help" or command == "/menu":
+                    await send_main_menu(db, user, message.platform, message.user_id)
+                elif command == "/teams":
+                    await send_teams_list(db, user, message.platform, message.user_id)
+                elif command == "/tasks":
+                    await send_tasks_list(db, user, message.platform, message.user_id)
                 elif command == "/create_team":
                     reply_text = await handle_create_team(db, user, args)
-                elif command == "/teams":
-                    reply_text = await handle_teams(db, user)
+                    await send_bot_reply(message.platform, message.user_id, reply_text)
                 elif command == "/invite":
                     reply_text = await handle_invite(db, user, args)
+                    await send_bot_reply(message.platform, message.user_id, reply_text)
                 elif command == "/members":
                     reply_text = await handle_members(db, user, args)
+                    await send_bot_reply(message.platform, message.user_id, reply_text)
                 elif command == "/projects":
                     reply_text = await handle_projects(db, user, args)
+                    await send_bot_reply(message.platform, message.user_id, reply_text)
                 elif command == "/create_project":
                     reply_text = await handle_create_project(db, user, args)
-                elif command == "/tasks":
-                    reply_text = await handle_tasks(db, user)
+                    await send_bot_reply(message.platform, message.user_id, reply_text)
                 elif command == "/team_tasks":
                     reply_text = await handle_team_tasks(db, user, args)
+                    await send_bot_reply(message.platform, message.user_id, reply_text)
                 elif command == "/create_task":
                     reply_text = await handle_create_task(db, user, args)
+                    await send_bot_reply(message.platform, message.user_id, reply_text)
                 elif command == "/update_task":
                     reply_text = await handle_update_task(db, user, args)
+                    await send_bot_reply(message.platform, message.user_id, reply_text)
                 else:
                     reply_text = "⚠️ دستور وارد شده ناشناخته است. برای مشاهده لیست دستورات معتبر دستور /help را ارسال کنید."
-
-                await send_bot_reply(message.platform, message.user_id, reply_text)
+                    await send_bot_reply(message.platform, message.user_id, reply_text)
+                
                 log_event(
                     event="process_message",
                     message=message,
@@ -545,23 +993,9 @@ async def process_message(message: InternalMessage, db: Session):
                 )
                 return
             else:
-                # Text is not a slash command, suggest help
-                token = create_access_token(user.id)
-                login_link = f"{settings.FRONTEND_URL}/login/callback?token={token}"
-                reply_text = (
-                    f"سلام {user.username or 'کاربر'} عزیز! 🌸\n"
-                    f"حساب شما قبلاً در هفته‌یار ثبت و متصل شده است.\n\n"
-                    f"برای ورود مستقیم به پنل مدیریت تسک خود، روی لینک زیر کلیک کنید:\n"
-                    f"{login_link}\n\n"
-                    f"💡 راهنمایی: برای مشاهده دستورات مدیریتی ربات، دستور /help را ارسال کنید."
-                )
-                await send_bot_reply(message.platform, message.user_id, reply_text)
-                log_event(
-                    event="process_message",
-                    message=message,
-                    result="login_success",
-                    details={"user_id": user.id, "action": "login_existing_user"},
-                )
+                # Text is not a slash command, default to main menu
+                USER_STATES.pop(message.user_id, None)
+                await send_main_menu(db, user, message.platform, message.user_id)
                 return
 
         # 3. User is not linked. Check if they shared their contact (phone number)
@@ -579,7 +1013,7 @@ async def process_message(message: InternalMessage, db: Session):
                     username=f"user_{phone}",
                 )
                 db.add(user)
-                db.flush()  # Generate ID
+                db.flush()
 
             # Link the new platform account to the User
             new_account = UserAccount(
@@ -591,29 +1025,14 @@ async def process_message(message: InternalMessage, db: Session):
             db.commit()
             db.refresh(user)
 
-            token = create_access_token(user.id)
-            login_link = f"{settings.FRONTEND_URL}/login/callback?token={token}"
-
             if is_new:
-                reply_text = (
-                    f"ثبت‌نام شما در هفته‌یار با موفقیت انجام شد! 🚀\n"
-                    f"حساب کاربری شما ساخته و به این پیام‌رسان متصل گردید.\n\n"
-                    f"برای ورود مستقیم به پنل مدیریت تسک خود، روی لینک زیر کلیک کنید:\n"
-                    f"{login_link}\n\n"
-                    f"💡 برای راهنمایی استفاده از ربات، دستور /help را ارسال کنید."
-                )
+                confirm_text = "ثبت‌نام شما در هفته‌یار با موفقیت انجام شد! 🚀"
             else:
-                reply_text = (
-                    f"حساب هفته‌یار شما با موفقیت به این پیام‌رسان متصل شد! 🎉\n"
-                    f"شماره موبایل: {phone}\n\n"
-                    f"برای ورود مستقیم به پنل مدیریت تسک خود، روی لینک زیر کلیک کنید:\n"
-                    f"{login_link}\n\n"
-                    f"💡 برای راهنمایی استفاده از ربات، دستور /help را ارسال کنید."
-                )
+                confirm_text = f"حساب هفته‌یار شما با موفقیت به این پیام‌رسان متصل شد! 🎉\nشماره موبایل: {phone}"
 
-            # Hide keyboard
-            remove_keyboard = {"remove_keyboard": True}
-            await send_bot_reply(message.platform, message.user_id, reply_text, reply_markup=remove_keyboard)
+            await send_bot_reply(message.platform, message.user_id, confirm_text, reply_markup={"remove_keyboard": True})
+            await send_main_menu(db, user, message.platform, message.user_id)
+
 
             log_event(
                 event="process_message",
@@ -656,3 +1075,4 @@ async def process_message(message: InternalMessage, db: Session):
         )
         err_msg = "متأسفانه در پردازش درخواست شما خطایی رخ داد. لطفاً مجدداً تلاش کنید."
         await send_bot_reply(message.platform, message.user_id, err_msg)
+
